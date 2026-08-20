@@ -23,9 +23,23 @@ import logging
 import queue
 import threading
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider, RecallStatus, is_trivial_prompt
+from agent.memory_provider import MemoryProvider, is_trivial_prompt
+
+try:
+    # Older Hermes releases exposed this small UI status carrier from the
+    # provider API. Current releases no longer do, but keeping a local fallback
+    # preserves Noctuary's optional recall_status() method without making the
+    # provider fail to import.
+    from agent.memory_provider import RecallStatus
+except ImportError:
+    @dataclass(frozen=True)
+    class RecallStatus:
+        provider_label: str
+        count: int
+        glyph: str = ""
 
 from .config import NoctuaryConfig, load_config, save_config_values
 from .store import NoctuaryStore

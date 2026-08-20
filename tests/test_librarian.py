@@ -97,6 +97,23 @@ def test_activity_gate_skips_quiet_day(store, cfg, fake_llm):
     assert "skipped" in log_text
 
 
+def test_pending_days_leaves_current_calendar_day_open(store, monkeypatch):
+    _seed_day(store, "2026-08-19")
+    _seed_day(store, "2026-08-20")
+
+    class FixedDateTime:
+        @classmethod
+        def now(cls):
+            import datetime
+            return datetime.datetime(2026, 8, 20, 4, 30)
+
+    monkeypatch.setattr(librarian, "datetime", FixedDateTime)
+    assert pending_days(store) == ["2026-08-19"]
+    assert pending_days(store, include_today=True) == [
+        "2026-08-19", "2026-08-20",
+    ]
+
+
 def test_force_overrides_gate(store, cfg, fake_llm):
     date = "2026-08-19"
     import datetime

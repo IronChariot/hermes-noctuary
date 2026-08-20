@@ -168,10 +168,24 @@ replacement bodies), never more than {limit} pages in total:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def pending_days(store: NoctuaryStore) -> List[str]:
-    """Source-log days not yet consolidated, oldest first."""
+def pending_days(
+    store: NoctuaryStore,
+    *,
+    include_today: bool = False,
+) -> List[str]:
+    """Source-log days eligible for consolidation, oldest first.
+
+    Scheduled/default runs leave the current local calendar day open so turns
+    arriving later that day cannot be stranded behind an already-consolidated
+    marker. Explicit backlog ingestion may pass ``include_today=True`` because
+    the operator has deliberately requested immediate bootstrap processing.
+    """
     done = set(store.consolidated_days())
-    return [d for d in store.source_days() if d not in done]
+    today = datetime.now().strftime("%Y-%m-%d")
+    return [
+        d for d in store.source_days()
+        if d not in done and (include_today or d < today)
+    ]
 
 
 def consolidate_day(

@@ -68,6 +68,50 @@ def test_parse_hermes_db(tmp_path):
     assert s1_only[0].text == "first question"
 
 
+def test_parse_hermes_db_filters_scaffolds_and_replay_duplicates(tmp_path):
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, "
+        "role TEXT, content TEXT, timestamp REAL, platform_message_id TEXT, "
+        "display_kind TEXT)"
+    )
+    substantive = "A genuine Discord message that is long enough to be substantive " * 2
+    answer = "A genuine assistant response that was replayed during migration " * 2
+    rows = [
+        ("s1", "user", substantive, 10.0, "discord-1", None),
+        # Replay copy lost its platform id; the authoritative Discord row wins.
+        ("s1", "user", substantive, 11.0, None, None),
+        ("s1", "assistant", answer, 12.0, None, None),
+        ("s1", "assistant", answer, 99.0, None, None),
+        ("s1", "user", "[Recent Summary (d0, node 1)] generated", 13.0, None, None),
+        ("s1", "user", "[CONTEXT COMPACTION — REFERENCE ONLY] generated", 14.0, None, None),
+        ("s1", "user", "[ASYNC DELEGATION BATCH COMPLETE — x] generated", 15.0, None, None),
+        ("s1", "assistant", "interrupted", 16.0, None, "hidden"),
+        # Identical short messages at distinct times can be genuine repeats.
+        ("s1", "user", "okay", 20.0, None, None),
+        ("s1", "user", "okay", 21.0, None, None),
+        # But an exact same-time replay is collapsed.
+        ("s1", "user", "same-time", 30.0, None, None),
+        ("s1", "user", "same-time", 30.0, None, None),
+    ]
+    conn.executemany(
+        "INSERT INTO messages (session_id, role, content, timestamp, "
+        "platform_message_id, display_kind) VALUES (?, ?, ?, ?, ?, ?)", rows
+    )
+    conn.commit()
+    conn.close()
+
+    messages = parse_input(db_path, session_id="s1")
+    assert [(m.role, m.text) for m in messages] == [
+        ("user", substantive),
+        ("assistant", answer),
+        ("user", "okay"),
+        ("user", "okay"),
+        ("user", "same-time"),
+    ]
+
+
 def test_archive_messages_pairs_turns(store, tmp_path):
     from noctuary.ingest import RawMessage
     messages = [

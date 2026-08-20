@@ -40,6 +40,21 @@ _ASSISTANT_MARKERS = re.compile(
     r"^\s*(?:\*\*)?(assistant|wren|maomao|agent|ai|hermes)(?:\*\*)?\s*[:>]", re.IGNORECASE
 )
 
+# Hermes persists raw history across compaction, but the same table may also
+# contain synthetic handoff scaffolds and replay copies created by older
+# context engines/migrations. Those are runtime state, not things Sam said,
+# so backlog ingestion must not make them immutable autobiographical sources.
+_SYNTHETIC_USER_PREFIXES = (
+    "[Recent Summary (",
+    "[Session Arc Summary (",
+    "[CONTEXT COMPACTION — REFERENCE ONLY]",
+    "[CONTEXT COMPACTION - REFERENCE ONLY]",
+    "[ASYNC DELEGATION",
+    "[BACKGROUND TASK",
+    "[System note:",
+)
+_SUBSTANTIVE_DEDUPE_CHARS = 80
+
 
 @dataclass
 class RawMessage:
@@ -91,21 +106,72 @@ def _parse_hermes_db(path: Path, session_id: Optional[str]) -> List[RawMessage]:
 
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
+        columns = {
+            str(row[1]) for row in conn.execute("PRAGMA table_info(messages)")
+        }
+        platform_id = (
+            "platform_message_id" if "platform_message_id" in columns
+            else "NULL AS platform_message_id"
+        )
+        display_kind = (
+            "display_kind" if "display_kind" in columns
+            else "NULL AS display_kind"
+        )
         query = (
-            "SELECT role, content, timestamp FROM messages "
-            "WHERE role IN ('user', 'assistant')"
+            f"SELECT id, role, content, timestamp, {platform_id}, {display_kind} "
+            "FROM messages WHERE role IN ('user', 'assistant')"
         )
         params: List = []
         if session_id:
             query += " AND session_id = ?"
             params.append(session_id)
         query += " ORDER BY timestamp, id"
-        out: List[RawMessage] = []
-        for role, content, ts in conn.execute(query, params):
+
+        rows = list(conn.execute(query, params))
+        prepared = []
+        authoritative_content = set()
+        for row_id, role, content, ts, message_id, kind in rows:
             text = _content_to_text(content)
-            if text.strip():
-                out.append(RawMessage(role=role, text=text,
-                                      ts=float(ts) if ts else None))
+            if not text.strip():
+                continue
+            if str(kind or "").lower() == "hidden":
+                continue
+            if role == "user" and text.startswith(_SYNTHETIC_USER_PREFIXES):
+                continue
+            item = (row_id, role, text, ts, str(message_id or ""))
+            prepared.append(item)
+            if message_id:
+                authoritative_content.add((role, text))
+
+        out: List[RawMessage] = []
+        seen_message_ids = set()
+        seen_substantive = set()
+        seen_short_at_time = set()
+        for _row_id, role, text, ts, message_id in prepared:
+            fingerprint = (role, text)
+            if message_id:
+                message_key = (role, message_id)
+                if message_key in seen_message_ids:
+                    continue
+                seen_message_ids.add(message_key)
+            else:
+                # A platform-backed copy is authoritative even if a replayed
+                # copy without its Discord id sorts earlier by timestamp.
+                if fingerprint in authoritative_content:
+                    continue
+                if len(text) >= _SUBSTANTIVE_DEDUPE_CHARS:
+                    if fingerprint in seen_substantive:
+                        continue
+                    seen_substantive.add(fingerprint)
+                else:
+                    # Preserve genuinely repeated short utterances at distinct
+                    # times, while collapsing exact replay rows.
+                    short_key = (role, text, round(float(ts or 0.0), 3))
+                    if short_key in seen_short_at_time:
+                        continue
+                    seen_short_at_time.add(short_key)
+            out.append(RawMessage(role=role, text=text,
+                                  ts=float(ts) if ts else None))
         return out
     finally:
         conn.close()
@@ -268,7 +334,7 @@ def run_ingest(
 
     if consolidate_after:
         from .librarian import consolidate_day, pending_days
-        days = pending_days(store)
+        days = pending_days(store, include_today=True)
         if max_days:
             days = days[:max_days]
         for day in days:
