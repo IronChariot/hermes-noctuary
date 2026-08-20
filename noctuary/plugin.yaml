@@ -1,0 +1,7 @@
+name: noctuary
+version: 0.1.0
+description: "Noctuary — human-like autobiographical memory: append-only source archive, graded passive recall over a wiki-like graph, and a nightly librarian that consolidates the day into episodes, concepts, patterns, and surface pages (git-versioned)."
+hooks:
+  - on_pre_compress
+  - on_session_end
+  - on_session_switch
