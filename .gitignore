@@ -216,3 +216,33 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local secrets and machine config
+.env
+.env.*
+!.env.example
+noctuary.json
+# Local memory stores (never commit real memories)
+store/
+memory-store/
+*.noctuary/
+test-store/
+scratch/
+# Derived embedding index — rebuildable from the Markdown files
+*.db
+*.sqlite
+*.sqlite3
+index/
+embeddings/
+*.faiss
+*.npy
+# Local embedding model weights
+models/
+*.gguf
+*.safetensors
+*.onnx
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
