@@ -59,6 +59,32 @@ _SYNTHETIC_USER_PREFIXES = (
 _SUBSTANTIVE_DEDUPE_CHARS = 80
 
 
+def _is_concatenated_platform_replay(text: str, pieces: set[str]) -> bool:
+    """Whether *text* is exactly 2+ platform-backed messages joined by blank lines."""
+    if not pieces:
+        return False
+    memo: Dict[int, int] = {}
+
+    def walk(pos: int) -> int:
+        if pos in memo:
+            return memo[pos]
+        best = -1
+        for piece in pieces:
+            if not piece or not text.startswith(piece, pos):
+                continue
+            end = pos + len(piece)
+            if end == len(text):
+                best = max(best, 1)
+            elif text.startswith("\n\n", end):
+                tail = walk(end + 2)
+                if tail >= 1:
+                    best = max(best, 1 + tail)
+        memo[pos] = best
+        return best
+
+    return walk(0) >= 2
+
+
 @dataclass
 class RawMessage:
     role: str            # "user" | "assistant"
@@ -162,6 +188,7 @@ def _parse_hermes_db(
         rows = list(conn.execute(query, params))
         prepared = []
         authoritative_content = set()
+        authoritative_texts: Dict[str, set[str]] = {"user": set(), "assistant": set()}
         for (row_id, role, content, ts, message_id, kind,
              is_active, is_compacted, is_observed) in rows:
             text = _content_to_text(content)
@@ -188,6 +215,7 @@ def _parse_hermes_db(
             prepared.append(item)
             if message_id:
                 authoritative_content.add((role, text))
+                authoritative_texts.setdefault(role, set()).add(text)
 
         out: List[RawMessage] = []
         seen_message_ids = set()
@@ -211,6 +239,10 @@ def _parse_hermes_db(
                 # rewritten timestamps and missing platform ids. This broader
                 # heuristic is opt-in because identical genuine messages must
                 # otherwise remain distinct.
+                if dedupe_replays and _is_concatenated_platform_replay(
+                    text, authoritative_texts.get(role, set())
+                ):
+                    continue
                 if dedupe_replays and fingerprint in authoritative_content:
                     continue
                 if dedupe_replays and len(text) >= _SUBSTANTIVE_DEDUPE_CHARS:

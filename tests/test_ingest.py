@@ -79,11 +79,15 @@ def test_parse_hermes_db_filters_scaffolds_and_replay_duplicates(tmp_path):
         "display_kind TEXT, active INTEGER, compacted INTEGER, observed INTEGER)"
     )
     substantive = "A genuine Discord message that is long enough to be substantive " * 2
+    second_platform = "A second genuine platform message"
     answer = "A genuine assistant response that was replayed during migration " * 2
     rows = [
         ("s1", "user", substantive, 10.0, "discord-1", None, 0, 1, 0),
+        ("s1", "user", second_platform, 10.5, "discord-2", None, 0, 1, 0),
         # Replay copy lost its platform id; the authoritative Discord row wins.
         ("s1", "user", substantive, 11.0, None, None, 1, 0, 0),
+        ("s1", "user", substantive + "\n\n" + second_platform,
+         11.5, None, None, 1, 0, 0),
         ("s1", "assistant", answer, 12.0, None, None, 0, 1, 0),
         ("s1", "assistant", answer, 99.0, None, None, 1, 0, 0),
         ("s1", "user", "[Recent Summary (d0, node 1)] generated", 13.0, None, None, 1, 0, 0),
@@ -112,6 +116,7 @@ def test_parse_hermes_db_filters_scaffolds_and_replay_duplicates(tmp_path):
     messages = parse_input(db_path, session_id="s1", dedupe_replays=True)
     assert [(m.role, m.text) for m in messages] == [
         ("user", substantive),
+        ("user", second_platform),
         ("assistant", answer),
         ("user", "okay"),
         ("user", "okay"),
