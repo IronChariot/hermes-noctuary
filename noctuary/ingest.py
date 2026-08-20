@@ -49,6 +49,7 @@ _SYNTHETIC_USER_PREFIXES = (
     "[Session Arc Summary (",
     "[CONTEXT COMPACTION — REFERENCE ONLY]",
     "[CONTEXT COMPACTION - REFERENCE ONLY]",
+    "[CONTEXT SUMMARY]:",
     "[ASYNC DELEGATION",
     "[BACKGROUND TASK",
     "[System note:",
@@ -117,8 +118,14 @@ def _parse_hermes_db(path: Path, session_id: Optional[str]) -> List[RawMessage]:
             "display_kind" if "display_kind" in columns
             else "NULL AS display_kind"
         )
+        active = "active" if "active" in columns else "1 AS active"
+        compacted = (
+            "compacted" if "compacted" in columns else "0 AS compacted"
+        )
+        observed = "observed" if "observed" in columns else "0 AS observed"
         query = (
-            f"SELECT id, role, content, timestamp, {platform_id}, {display_kind} "
+            f"SELECT id, role, content, timestamp, {platform_id}, {display_kind}, "
+            f"{active}, {compacted}, {observed} "
             "FROM messages WHERE role IN ('user', 'assistant')"
         )
         params: List = []
@@ -130,13 +137,24 @@ def _parse_hermes_db(path: Path, session_id: Optional[str]) -> List[RawMessage]:
         rows = list(conn.execute(query, params))
         prepared = []
         authoritative_content = set()
-        for row_id, role, content, ts, message_id, kind in rows:
+        for (row_id, role, content, ts, message_id, kind,
+             is_active, is_compacted, is_observed) in rows:
             text = _content_to_text(content)
             if not text.strip():
                 continue
-            if str(kind or "").lower() == "hidden":
+            # Canonical Hermes history is live rows plus durable compacted
+            # rows. active=0/compacted=0 rows were rewound or undone.
+            if not (bool(is_active) or bool(is_compacted)):
                 continue
-            if role == "user" and text.startswith(_SYNTHETIC_USER_PREFIXES):
+            # Observed user rows are surrounding channel context, not a direct
+            # message from the session's user.
+            if bool(is_observed):
+                continue
+            # Any typed display row is timeline/UI bookkeeping rather than a
+            # model conversation turn (hidden markers, reactions, notices…).
+            if str(kind or "").strip():
+                continue
+            if role == "user" and text.lstrip().startswith(_SYNTHETIC_USER_PREFIXES):
                 continue
             item = (row_id, role, text, ts, str(message_id or ""))
             prepared.append(item)

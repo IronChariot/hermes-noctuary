@@ -158,11 +158,15 @@ def _cmd_status(store, cfg) -> int:
     days = store.source_days()
     print(f"source days: {len(days)}"
           + (f" ({days[0]} … {days[-1]})" if days else ""))
+    from .librarian import pending_days
     consolidated = set(store.consolidated_days())
-    pending = [d for d in days if d not in consolidated]
+    pending = pending_days(store)
     print(f"pending consolidation: {len(pending)}"
           + (f" ({', '.join(pending[:5])}{'…' if len(pending) > 5 else ''})"
              if pending else ""))
+    today = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
+    if today in days and today not in consolidated:
+        print(f"open current day: {today} (eligible after midnight)")
     for node_type in ("episode", "concept", "pattern", "surface"):
         count = len(store.all_nodes(node_type))
         print(f"{node_type + ' nodes:':<16} {count}")
