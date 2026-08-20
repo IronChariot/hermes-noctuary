@@ -76,6 +76,10 @@ noctuary/
    hermes noctuary ingest ~/.hermes/state.db --session <session-id>
    ```
 
+   If the selected session was previously replayed by a legacy context engine
+   or migration, add `--dedupe-replays`. This broader content-based cleanup is
+   deliberately opt-in so genuine repeated messages are preserved by default.
+
 5. Schedule the nightly librarian (Hermes cron or the OS scheduler):
 
    ```bash
@@ -111,7 +115,7 @@ hermes noctuary status                     # store, index, pending days
 hermes noctuary consolidate [--date D] [--force]
 hermes noctuary ingest <path> [--format auto|hermes-db|json|jsonl|text]
                               [--session ID] [--date YYYY-MM-DD]
-                              [--no-consolidate] [--max-days N]
+                              [--no-consolidate] [--max-days N] [--dedupe-replays]
 hermes noctuary recall <query>             # debug: print the passive packet
 hermes noctuary search <query>             # debug: semantic search, all layers
 hermes noctuary show <node-id>             # print one node

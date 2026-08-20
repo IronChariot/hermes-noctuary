@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
 from noctuary.ingest import archive_messages, parse_input, run_ingest
 
 
@@ -61,8 +63,8 @@ def test_parse_hermes_db(tmp_path):
     conn.commit()
     conn.close()
 
-    all_messages = parse_input(db_path)
-    assert len(all_messages) == 3  # tool row excluded
+    with pytest.raises(ValueError, match="multiple conversational sessions"):
+        parse_input(db_path)
     s1_only = parse_input(db_path, session_id="s1")
     assert len(s1_only) == 2
     assert s1_only[0].text == "first question"
@@ -86,6 +88,7 @@ def test_parse_hermes_db_filters_scaffolds_and_replay_duplicates(tmp_path):
         ("s1", "assistant", answer, 99.0, None, None, 1, 0, 0),
         ("s1", "user", "[Recent Summary (d0, node 1)] generated", 13.0, None, None, 1, 0, 0),
         ("s1", "user", "  [CONTEXT SUMMARY]: generated", 14.0, None, None, 1, 0, 0),
+        ("s1", "assistant", " [CONTEXT SUMMARY]: generated", 14.5, None, None, 1, 0, 0),
         ("s1", "user", "[ASYNC DELEGATION BATCH COMPLETE — x] generated", 15.0, None, None, 1, 0, 0),
         ("s1", "assistant", "interrupted", 16.0, None, "hidden", 0, 1, 0),
         ("s1", "assistant", "timeline reaction", 17.0, None, "reaction", 1, 0, 0),
@@ -106,7 +109,7 @@ def test_parse_hermes_db_filters_scaffolds_and_replay_duplicates(tmp_path):
     conn.commit()
     conn.close()
 
-    messages = parse_input(db_path, session_id="s1")
+    messages = parse_input(db_path, session_id="s1", dedupe_replays=True)
     assert [(m.role, m.text) for m in messages] == [
         ("user", substantive),
         ("assistant", answer),
@@ -114,6 +117,39 @@ def test_parse_hermes_db_filters_scaffolds_and_replay_duplicates(tmp_path):
         ("user", "okay"),
         ("user", "same-time"),
     ]
+
+
+def test_parse_hermes_db_uses_id_order_not_regressing_timestamps(tmp_path):
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, "
+                 "session_id TEXT, role TEXT, content TEXT, timestamp REAL)")
+    conn.execute("INSERT INTO messages VALUES (1, 's1', 'user', 'question', 20)")
+    conn.execute("INSERT INTO messages VALUES (2, 's1', 'assistant', 'answer', 10)")
+    conn.commit()
+    conn.close()
+
+    messages = parse_input(db_path, session_id="s1")
+    assert [(m.role, m.text) for m in messages] == [
+        ("user", "question"), ("assistant", "answer"),
+    ]
+
+
+def test_replay_dedupe_is_explicit_for_distinct_timestamp_text(tmp_path):
+    db_path = tmp_path / "state.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, "
+                 "session_id TEXT, role TEXT, content TEXT, timestamp REAL)")
+    text = "A deliberately repeated long message " * 4
+    conn.execute("INSERT INTO messages VALUES (1, 's1', 'user', ?, 10)", (text,))
+    conn.execute("INSERT INTO messages VALUES (2, 's1', 'user', ?, 20)", (text,))
+    conn.commit()
+    conn.close()
+
+    assert len(parse_input(db_path, session_id="s1")) == 2
+    assert len(parse_input(
+        db_path, session_id="s1", dedupe_replays=True,
+    )) == 1
 
 
 def test_archive_messages_pairs_turns(store, tmp_path):

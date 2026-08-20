@@ -44,12 +44,14 @@ _ASSISTANT_MARKERS = re.compile(
 # contain synthetic handoff scaffolds and replay copies created by older
 # context engines/migrations. Those are runtime state, not things Sam said,
 # so backlog ingestion must not make them immutable autobiographical sources.
-_SYNTHETIC_USER_PREFIXES = (
+_COMPACTION_PREFIXES = (
     "[Recent Summary (",
     "[Session Arc Summary (",
     "[CONTEXT COMPACTION — REFERENCE ONLY]",
     "[CONTEXT COMPACTION - REFERENCE ONLY]",
     "[CONTEXT SUMMARY]:",
+)
+_SYNTHETIC_USER_PREFIXES = (
     "[ASYNC DELEGATION",
     "[BACKGROUND TASK",
     "[System note:",
@@ -69,6 +71,7 @@ def parse_input(
     *,
     fmt: str = "auto",
     session_id: Optional[str] = None,
+    dedupe_replays: bool = False,
 ) -> List[RawMessage]:
     suffix = path.suffix.lower()
     if fmt == "auto":
@@ -82,7 +85,9 @@ def parse_input(
             fmt = "text"
 
     if fmt == "hermes-db":
-        return _parse_hermes_db(path, session_id)
+        return _parse_hermes_db(
+            path, session_id, dedupe_replays=dedupe_replays
+        )
     if fmt == "json":
         data = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(data, dict):
@@ -102,11 +107,29 @@ def parse_input(
     return _parse_text(path.read_text(encoding="utf-8"))
 
 
-def _parse_hermes_db(path: Path, session_id: Optional[str]) -> List[RawMessage]:
+def _parse_hermes_db(
+    path: Path,
+    session_id: Optional[str],
+    *,
+    dedupe_replays: bool = False,
+) -> List[RawMessage]:
     import sqlite3
 
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
+        if not session_id:
+            session_ids = [
+                str(row[0]) for row in conn.execute(
+                    "SELECT DISTINCT session_id FROM messages "
+                    "WHERE role IN ('user', 'assistant') "
+                    "AND session_id IS NOT NULL"
+                )
+            ]
+            if len(session_ids) > 1:
+                raise ValueError(
+                    "Hermes DB contains multiple conversational sessions; "
+                    "pass --session to avoid cross-session turn pairing"
+                )
         columns = {
             str(row[1]) for row in conn.execute("PRAGMA table_info(messages)")
         }
@@ -132,7 +155,9 @@ def _parse_hermes_db(path: Path, session_id: Optional[str]) -> List[RawMessage]:
         if session_id:
             query += " AND session_id = ?"
             params.append(session_id)
-        query += " ORDER BY timestamp, id"
+        # Hermes uses insertion id as canonical conversation order. Timestamps
+        # are metadata and may regress during import, replay, or migration.
+        query += " ORDER BY id"
 
         rows = list(conn.execute(query, params))
         prepared = []
@@ -154,7 +179,10 @@ def _parse_hermes_db(path: Path, session_id: Optional[str]) -> List[RawMessage]:
             # model conversation turn (hidden markers, reactions, notices…).
             if str(kind or "").strip():
                 continue
-            if role == "user" and text.lstrip().startswith(_SYNTHETIC_USER_PREFIXES):
+            stripped = text.lstrip()
+            if stripped.startswith(_COMPACTION_PREFIXES):
+                continue
+            if role == "user" and stripped.startswith(_SYNTHETIC_USER_PREFIXES):
                 continue
             item = (row_id, role, text, ts, str(message_id or ""))
             prepared.append(item)
@@ -173,21 +201,22 @@ def _parse_hermes_db(path: Path, session_id: Optional[str]) -> List[RawMessage]:
                     continue
                 seen_message_ids.add(message_key)
             else:
-                # A platform-backed copy is authoritative even if a replayed
-                # copy without its Discord id sorts earlier by timestamp.
-                if fingerprint in authoritative_content:
+                # Exact same-time/content copies are strong replay evidence.
+                replay_key = (role, text, round(float(ts or 0.0), 3))
+                if replay_key in seen_short_at_time:
                     continue
-                if len(text) >= _SUBSTANTIVE_DEDUPE_CHARS:
+                seen_short_at_time.add(replay_key)
+
+                # Legacy migrations can replay the same substantive text with
+                # rewritten timestamps and missing platform ids. This broader
+                # heuristic is opt-in because identical genuine messages must
+                # otherwise remain distinct.
+                if dedupe_replays and fingerprint in authoritative_content:
+                    continue
+                if dedupe_replays and len(text) >= _SUBSTANTIVE_DEDUPE_CHARS:
                     if fingerprint in seen_substantive:
                         continue
                     seen_substantive.add(fingerprint)
-                else:
-                    # Preserve genuinely repeated short utterances at distinct
-                    # times, while collapsing exact replay rows.
-                    short_key = (role, text, round(float(ts or 0.0), 3))
-                    if short_key in seen_short_at_time:
-                        continue
-                    seen_short_at_time.add(short_key)
             out.append(RawMessage(role=role, text=text,
                                   ts=float(ts) if ts else None))
         return out
@@ -328,11 +357,14 @@ def run_ingest(
     default_date: Optional[str] = None,
     consolidate_after: bool = True,
     max_days: Optional[int] = None,
+    dedupe_replays: bool = False,
     log: Callable[[str], None] = logger.info,
 ) -> Dict[str, int]:
     """Archive a backlog file and (optionally) consolidate the resulting days."""
     store.init()
-    messages = parse_input(path, fmt=fmt, session_id=session_id)
+    messages = parse_input(
+        path, fmt=fmt, session_id=session_id, dedupe_replays=dedupe_replays
+    )
     if not messages:
         log(f"noctuary ingest: no messages found in {path}")
         return {}

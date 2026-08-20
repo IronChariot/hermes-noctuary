@@ -100,6 +100,7 @@ def test_activity_gate_skips_quiet_day(store, cfg, fake_llm):
 def test_pending_days_leaves_current_calendar_day_open(store, monkeypatch):
     _seed_day(store, "2026-08-19")
     _seed_day(store, "2026-08-20")
+    _seed_day(store, "2026-08-21")
 
     class FixedDateTime:
         @classmethod

@@ -30,6 +30,10 @@ def register_cli(subparser) -> None:
                         help="Archive only; skip the librarian passes")
     ingest.add_argument("--max-days", type=int, default=None,
                         help="Consolidate at most N days this run")
+    ingest.add_argument(
+        "--dedupe-replays", action="store_true",
+        help="Collapse legacy migration replay copies in the selected session",
+    )
 
     consolidate = subs.add_parser(
         "consolidate", help="Run the nightly librarian (all pending days)"
@@ -82,6 +86,7 @@ def noctuary_command(args) -> int:
             default_date=args.date,
             consolidate_after=not args.no_consolidate,
             max_days=args.max_days,
+            dedupe_replays=args.dedupe_replays,
             log=echo,
         )
         return 0
@@ -164,7 +169,7 @@ def _cmd_status(store, cfg) -> int:
     print(f"pending consolidation: {len(pending)}"
           + (f" ({', '.join(pending[:5])}{'…' if len(pending) > 5 else ''})"
              if pending else ""))
-    today = __import__("datetime").datetime.now().strftime("%Y-%m-%d")
+    today = __import__("datetime").datetime.now().astimezone().date().isoformat()
     if today in days and today not in consolidated:
         print(f"open current day: {today} (eligible after midnight)")
     for node_type in ("episode", "concept", "pattern", "surface"):

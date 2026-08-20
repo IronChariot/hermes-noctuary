@@ -181,10 +181,10 @@ def pending_days(
     the operator has deliberately requested immediate bootstrap processing.
     """
     done = set(store.consolidated_days())
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now().astimezone().date().isoformat()
     return [
         d for d in store.source_days()
-        if d not in done and (include_today or d < today)
+        if d not in done and (d < today or (include_today and d == today))
     ]
 
 
