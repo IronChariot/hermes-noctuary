@@ -102,9 +102,12 @@ noctuary/
 | `consolidateSchedule` | `"nightly"` | Informational; scheduling is external |
 | `minUserTurns` | `1` | Activity gate: days with fewer user turns are skipped |
 | `ingestPlatforms` | `["discord"]` | Platforms whose live turns are archived |
+| `jsonRepairRetries` | `2` | Times the librarian asks the model to repair malformed or wrong-shaped JSON |
 | `decayFactor` | `0.95` | Accessibility multiplier per active day for untouched nodes |
 | `retrievalBoost` | `0.15` | Accessibility boost for retrieved nodes |
 | `gistSimilarity` / `familiaritySimilarity` | `0.50` / `0.32` | Recall level floors |
+
+Every librarian pass validates both JSON syntax and its required top-level list. On failure, the same model receives the parser diagnostic and its previous reply, then gets `jsonRepairRetries` opportunities to return the complete corrected object. If all attempts fail, the full raw replies and diagnostics are saved with mode `0600` under `$HERMES_HOME/logs/noctuary-json-failures/`; only a short error appears in normal logs.
 
 Only the primary agent on a platform in `ingestPlatforms` writes to the archive. Subagents, cron jobs, and other platforms get read-only recall. Add `"cli"` to `ingestPlatforms` to capture CLI turns during testing.
 
@@ -113,6 +116,7 @@ Only the primary agent on a platform in `ingestPlatforms` writes to the archive.
 ```
 hermes noctuary status                     # store, index, pending days
 hermes noctuary consolidate [--date D] [--force]
+hermes noctuary refresh-surface --date D   # retry surface only; no decay
 hermes noctuary ingest <path> [--format auto|hermes-db|json|jsonl|text]
                               [--session ID] [--date YYYY-MM-DD]
                               [--no-consolidate] [--max-days N] [--dedupe-replays]

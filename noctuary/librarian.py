@@ -19,7 +19,9 @@ leaving the working tree inspectable and the source logs untouched.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
@@ -311,6 +313,116 @@ def _system_message(persona: str) -> Dict[str, str]:
     return {"role": "system", "content": content}
 
 
+def _save_json_failure(
+    cfg: NoctuaryConfig,
+    pass_name: str,
+    replies: List[str],
+    errors: List[str],
+) -> Optional[str]:
+    """Persist final malformed replies outside the git-versioned memory store."""
+    try:
+        directory = cfg.hermes_home / "logs" / "noctuary-json-failures"
+        directory.mkdir(parents=True, exist_ok=True)
+        safe_name = re.sub(r"[^a-zA-Z0-9_.-]+", "-", pass_name).strip("-")
+        stamp = datetime.now().astimezone().strftime("%Y%m%dT%H%M%S%f%z")
+        path = directory / f"{stamp}-{safe_name or 'librarian'}.json"
+        payload = {
+            "created": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "pass": pass_name,
+            "provider": cfg.get_str("librarianProvider"),
+            "model": cfg.get_str("librarianModel"),
+            "attempts": [
+                {"number": index + 1, "error": error, "reply": reply}
+                for index, (reply, error) in enumerate(zip(replies, errors))
+            ],
+        }
+        path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+        return str(path)
+    except Exception as exc:
+        logger.warning("noctuary: could not save malformed JSON diagnostic: %s", exc)
+        return None
+
+
+def _request_json(
+    cfg: NoctuaryConfig,
+    messages: List[Dict[str, str]],
+    *,
+    pass_name: str,
+    required_list_key: Optional[str] = None,
+) -> Any:
+    """Request and validate JSON, asking the same model to repair bad output."""
+    retries = max(0, cfg.get_int("jsonRepairRetries"))
+    conversation = [dict(message) for message in messages]
+    replies: List[str] = []
+    errors: List[str] = []
+
+    for attempt in range(retries + 1):
+        reply = librarian_chat(
+            cfg,
+            conversation,
+            temperature=0.0 if attempt else 0.3,
+        )
+        replies.append(reply)
+        try:
+            data = parse_json_reply(reply)
+            if not isinstance(data, dict):
+                raise ValueError(
+                    f"top-level JSON must be an object, got {type(data).__name__}"
+                )
+            if required_list_key is not None:
+                value = data.get(required_list_key)
+                if not isinstance(value, list):
+                    actual = (
+                        "missing"
+                        if required_list_key not in data
+                        else type(value).__name__
+                    )
+                    raise ValueError(
+                        f"top-level key {required_list_key!r} must be a list; "
+                        f"got {actual}"
+                    )
+            return data
+        except ValueError as exc:
+            error = str(exc)
+            errors.append(error)
+            if attempt >= retries:
+                artifact = _save_json_failure(cfg, pass_name, replies, errors)
+                suffix = f"; full replies saved to {artifact}" if artifact else ""
+                raise ValueError(
+                    f"{pass_name} returned unusable JSON after {attempt + 1} "
+                    f"attempt(s): {error}{suffix}"
+                ) from exc
+
+            expected = (
+                f"a JSON object whose {required_list_key!r} key is a list"
+                if required_list_key
+                else "one JSON object"
+            )
+            repair = (
+                "Your previous response could not be used by the memory librarian.\n"
+                f"Parser/shape error: {error}\n"
+                f"Return the COMPLETE response again as {expected}. Start over rather "
+                "than continuing the previous text. Output JSON only, with every string "
+                "properly escaped and every brace/bracket closed. If the previous answer "
+                "was cut off, make the replacement more concise so it fits."
+            )
+            logger.warning(
+                "noctuary: %s JSON attempt %d/%d failed: %s; requesting repair",
+                pass_name,
+                attempt + 1,
+                retries + 1,
+                error,
+            )
+            conversation.extend([
+                {"role": "assistant", "content": reply},
+                {"role": "user", "content": repair},
+            ])
+
+
 def _render_turns(turns: List[Turn]) -> str:
     blocks = []
     for t in turns:
@@ -353,9 +465,12 @@ def _segment(
         prompt = _SEGMENT_PROMPT.format(
             date=date, part=i, parts=len(chunks), log=_render_turns(chunk)
         )
-        reply = librarian_chat(cfg, [_system_message(persona),
-                                     {"role": "user", "content": prompt}])
-        data = parse_json_reply(reply)
+        data = _request_json(
+            cfg,
+            [_system_message(persona), {"role": "user", "content": prompt}],
+            pass_name=f"segmentation part {i}/{len(chunks)}",
+            required_list_key="episodes",
+        )
         part = data.get("episodes") if isinstance(data, dict) else None
         if not isinstance(part, list):
             raise RuntimeError(f"segmentation pass returned no episodes list (part {i})")
@@ -466,9 +581,12 @@ def _integrate_episode(
         related="\n".join(related_lines),
     )
     try:
-        reply = librarian_chat(cfg, [_system_message(persona),
-                                     {"role": "user", "content": prompt}])
-        data = parse_json_reply(reply)
+        data = _request_json(
+            cfg,
+            [_system_message(persona), {"role": "user", "content": prompt}],
+            pass_name=f"integration for {episode.id}",
+            required_list_key="concepts",
+        )
     except Exception as exc:
         # A failed integration leaves the episode standing alone — provenance
         # intact, links to be added on a later pass — rather than losing it.
@@ -545,9 +663,12 @@ def _patterns_pass(
         episodes="\n".join(episode_lines), patterns="\n".join(pattern_lines)
     )
     try:
-        reply = librarian_chat(cfg, [_system_message(persona),
-                                     {"role": "user", "content": prompt}])
-        data = parse_json_reply(reply)
+        data = _request_json(
+            cfg,
+            [_system_message(persona), {"role": "user", "content": prompt}],
+            pass_name="patterns pass",
+            required_list_key="patterns",
+        )
     except Exception as exc:
         log(f"noctuary: patterns pass failed: {exc}")
         return 0, 0, []
@@ -622,9 +743,12 @@ def _surface_pass(
         material="\n".join(material_lines) or "(none)",
     )
     try:
-        reply = librarian_chat(cfg, [_system_message(persona),
-                                     {"role": "user", "content": prompt}])
-        data = parse_json_reply(reply)
+        data = _request_json(
+            cfg,
+            [_system_message(persona), {"role": "user", "content": prompt}],
+            pass_name="surface pass",
+            required_list_key="surface_pages",
+        )
     except Exception as exc:
         log(f"noctuary: surface pass failed: {exc}")
         return 0
@@ -658,6 +782,70 @@ def _surface_pass(
             existing_count += 1
         count += 1
     return count
+
+
+def refresh_surface(
+    store: NoctuaryStore,
+    cfg: NoctuaryConfig,
+    date: str,
+    *,
+    log: Callable[[str], None] = logger.info,
+) -> tuple[int, bool]:
+    """Retry only the surface pass for an already-consolidated source day.
+
+    This deliberately does not segment again, rewrite concepts, mark a day,
+    or run accessibility decay. It is the safe recovery path when the optional
+    surface pass failed but the rest of a consolidation was committed.
+    """
+    store.init()
+    episode_nodes = [
+        node
+        for node in store.all_nodes("episode")
+        if any(ref.startswith(f"{date}/") for ref in node.sources)
+    ]
+    if not episode_nodes:
+        raise ValueError(f"no consolidated episode nodes found for {date}")
+
+    episode_ids = {node.id for node in episode_nodes}
+    touched = set(episode_ids)
+    for node_type in ("concept", "pattern"):
+        for node in store.all_nodes(node_type):
+            if (
+                any(target in episode_ids for target in node.link_targets())
+                or any(node.id in episode.link_targets() for episode in episode_nodes)
+            ):
+                touched.add(node.id)
+
+    count = _surface_pass(
+        store,
+        cfg,
+        _load_persona(cfg),
+        episode_nodes,
+        touched,
+        log=log,
+    )
+    problems = _validate(store)
+    if problems:
+        raise RuntimeError(
+            "surface refresh validation failed, no commit made: "
+            + "; ".join(problems[:5])
+        )
+
+    engine = RecallEngine(store, cfg)
+    try:
+        engine.reindex()
+    finally:
+        engine.close()
+
+    committed = store.git_commit(
+        f"noctuary: refresh surface for {date}\n\n"
+        f"- surface pages updated: {count}\n"
+        "- recovery pass only; no segmentation or accessibility decay"
+    )
+    log(
+        f"noctuary: surface refresh for {date} updated {count} page(s)"
+        + (" (committed)" if committed else " (no git changes)"))
+    return count, committed
 
 
 # ---------------------------------------------------------------------------

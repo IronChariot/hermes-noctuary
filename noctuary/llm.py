@@ -76,6 +76,80 @@ def extract_text(response: Any) -> str:
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
+class JsonReplyError(ValueError):
+    """A model reply contained JSON-looking text that could not be decoded."""
+
+
+def _structure_hint(candidate: str) -> str:
+    """Describe unmatched JSON delimiters without modifying the response."""
+    pairs = {"{": "}", "[": "]"}
+    stack: List[tuple[str, int]] = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(candidate):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char in pairs:
+            stack.append((char, index))
+        elif char in ("}", "]"):
+            if not stack:
+                return f"unexpected closing {char!r} at character {index}"
+            opener, opener_index = stack[-1]
+            expected = pairs[opener]
+            if char != expected:
+                return (
+                    f"mismatched closing {char!r} at character {index}; "
+                    f"expected {expected!r} for {opener!r} at character {opener_index}"
+                )
+            stack.pop()
+    if in_string:
+        return "response ends inside a JSON string (possibly truncated)"
+    if stack:
+        expected = "".join(pairs[opener] for opener, _ in reversed(stack))
+        return f"unclosed JSON delimiter(s); expected {expected!r} before the end"
+    return "JSON delimiters are balanced; check commas, colons, quoting, or escapes"
+
+
+def _top_level_json_starts(candidate: str) -> List[int]:
+    """Find possible JSON starts while excluding arrays/objects nested in one."""
+    pairs = {"{": "}", "[": "]"}
+    stack: List[str] = []
+    starts: List[int] = []
+    in_string = False
+    escaped = False
+    for index, char in enumerate(candidate):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"' and stack:
+            in_string = True
+        elif char in pairs:
+            if not stack:
+                starts.append(index)
+            stack.append(char)
+        elif char in ("}", "]") and stack:
+            if char == pairs[stack[-1]]:
+                stack.pop()
+            else:
+                # Preserve the containing opener so nested fragments cannot be
+                # mistaken for an independent valid response after a mismatch.
+                continue
+    return starts
+
+
 def parse_json_reply(text: str) -> Any:
     """Parse a JSON object/array out of a model reply.
 
@@ -89,18 +163,35 @@ def parse_json_reply(text: str) -> Any:
     candidates.append(text)
 
     decoder = json.JSONDecoder()
+    best_error: Optional[tuple[int, json.JSONDecodeError, str]] = None
+    found_opener = False
     for candidate in candidates:
         candidate = candidate.strip()
-        for opener in ("{", "["):
-            start = candidate.find(opener)
-            if start < 0:
-                continue
+        starts = _top_level_json_starts(candidate)
+        for start in starts:
+            found_opener = True
+            fragment = candidate[start:]
             try:
-                value, _ = decoder.raw_decode(candidate[start:])
+                value, _ = decoder.raw_decode(fragment)
                 return value
-            except json.JSONDecodeError:
-                continue
-    raise ValueError(f"no JSON found in model reply: {text[:200]!r}")
+            except json.JSONDecodeError as exc:
+                progress = start + exc.pos
+                if best_error is None or progress > best_error[0]:
+                    best_error = (progress, exc, fragment)
+
+    if not found_opener or best_error is None:
+        raise JsonReplyError(
+            f"reply contains no JSON object or array; excerpt: {text[:200]!r}"
+        )
+
+    _progress, exc, fragment = best_error
+    near_start = max(0, exc.pos - 60)
+    near_end = min(len(fragment), exc.pos + 60)
+    near = fragment[near_start:near_end]
+    raise JsonReplyError(
+        f"JSON parse error: {exc.msg} at line {exc.lineno}, column {exc.colno} "
+        f"(character {exc.pos}); {_structure_hint(fragment)}; near {near!r}"
+    )
 
 
 def clamp01(value: Any, default: float = 0.5) -> float:

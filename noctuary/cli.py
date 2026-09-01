@@ -42,6 +42,12 @@ def register_cli(subparser) -> None:
     consolidate.add_argument("--force", action="store_true",
                              help="Override the activity gate")
 
+    refresh = subs.add_parser(
+        "refresh-surface",
+        help="Retry only the surface pass for an already-consolidated day",
+    )
+    refresh.add_argument("--date", required=True, help="Source day YYYY-MM-DD")
+
     recall = subs.add_parser("recall", help="Debug: print the passive recall packet")
     recall.add_argument("query", nargs="+")
 
@@ -100,6 +106,19 @@ def noctuary_command(args) -> int:
             print("no commit was made; the working tree in "
                   f"{store.root} holds the partial changes for inspection",
                   file=sys.stderr)
+            return 1
+        return 0
+
+    if command == "refresh-surface":
+        from .librarian import refresh_surface
+        try:
+            refresh_surface(store, cfg, args.date, log=echo)
+        except Exception as exc:
+            print(f"surface refresh failed: {exc}", file=sys.stderr)
+            print(
+                f"no commit was made; inspect the working tree in {store.root}",
+                file=sys.stderr,
+            )
             return 1
         return 0
 

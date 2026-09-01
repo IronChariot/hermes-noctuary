@@ -233,3 +233,115 @@ def test_pattern_without_support_is_dropped(store, cfg, monkeypatch):
     assert result.ran
     assert result.patterns_created == 0
     assert store.load_node("sam-hates-mornings") is None
+
+
+def test_request_json_reports_error_to_model_and_retries(cfg, monkeypatch):
+    cfg.values["jsonRepairRetries"] = 2
+    calls = []
+
+    def flaky(_cfg, messages, **kwargs):
+        calls.append((messages, kwargs))
+        if len(calls) == 1:
+            return '{"surface_pages": [{"body": "cut off'
+        return json.dumps({"surface_pages": []})
+
+    monkeypatch.setattr(librarian, "librarian_chat", flaky)
+    data = librarian._request_json(
+        cfg,
+        [
+            {"role": "system", "content": "JSON only"},
+            {"role": "user", "content": "Return surface pages"},
+        ],
+        pass_name="surface pass",
+        required_list_key="surface_pages",
+    )
+
+    assert data == {"surface_pages": []}
+    assert len(calls) == 2
+    retry_messages, retry_kwargs = calls[1]
+    assert [message["role"] for message in retry_messages] == [
+        "system", "user", "assistant", "user",
+    ]
+    assert "inside a JSON string" in retry_messages[-1]["content"]
+    assert "COMPLETE response again" in retry_messages[-1]["content"]
+    assert "'surface_pages' key is a list" in retry_messages[-1]["content"]
+    assert retry_kwargs["temperature"] == 0.0
+
+
+def test_request_json_retries_wrong_shape_and_saves_final_replies(cfg, monkeypatch):
+    cfg.values["jsonRepairRetries"] = 1
+    replies = ["{\"wrong\": []}", "still not JSON"]
+
+    def always_bad(_cfg, messages, **kwargs):
+        return replies.pop(0)
+
+    monkeypatch.setattr(librarian, "librarian_chat", always_bad)
+    with pytest.raises(ValueError, match="after 2 attempt") as caught:
+        librarian._request_json(
+            cfg,
+            [{"role": "user", "content": "Return patterns"}],
+            pass_name="patterns pass",
+            required_list_key="patterns",
+        )
+
+    assert "full replies saved to" in str(caught.value)
+    artifacts = list((cfg.hermes_home / "logs" / "noctuary-json-failures").glob("*.json"))
+    assert len(artifacts) == 1
+    payload = json.loads(artifacts[0].read_text(encoding="utf-8"))
+    assert payload["pass"] == "patterns pass"
+    assert [attempt["reply"] for attempt in payload["attempts"]] == [
+        '{"wrong": []}', "still not JSON",
+    ]
+    assert artifacts[0].stat().st_mode & 0o777 == 0o600
+
+
+def test_full_consolidation_repairs_malformed_surface_json(store, cfg, monkeypatch):
+    date = _seed_day(store)
+    base = _FakeLlm()
+    surface_calls = []
+
+    def flaky_surface(cfg_, messages, **kwargs):
+        if any("Refresh your surface memory pages" in m["content"] for m in messages):
+            surface_calls.append(messages)
+            if len(surface_calls) == 1:
+                return '{"surface_pages": [{"body": "cut off'
+            return json.dumps({"surface_pages": [{
+                "id": "cats-and-prey",
+                "title": "Cats and prey",
+                "body": "The cats bring live prey inside. Details: [[cats]].",
+                "related": ["cats"],
+            }]})
+        return base(cfg_, messages, **kwargs)
+
+    monkeypatch.setattr(librarian, "librarian_chat", flaky_surface)
+    result = consolidate_day(store, cfg, date)
+
+    assert result.surface_updated == 1
+    assert len(surface_calls) == 2
+    assert store.load_node("cats-and-prey") is not None
+
+
+def test_refresh_surface_does_not_repeat_segmentation_or_decay(store, cfg, fake_llm):
+    date = _seed_day(store)
+    stale = Node(
+        id="old-thing",
+        type="concept",
+        title="Old thing",
+        body="unrelated",
+        accessibility=0.5,
+    )
+    store.save_node(stale)
+    first = consolidate_day(store, cfg, date)
+    assert first.ran
+    accessibility_after_consolidation = store.load_node("old-thing").accessibility
+    episode_count = len(store.all_nodes("episode"))
+    calls_before = len(fake_llm.calls)
+
+    updated, _committed = librarian.refresh_surface(store, cfg, date)
+
+    assert updated == 1
+    assert len(store.all_nodes("episode")) == episode_count
+    assert store.load_node("old-thing").accessibility == accessibility_after_consolidation
+    new_prompts = fake_llm.calls[calls_before:]
+    assert len(new_prompts) == 1
+    assert "Refresh your surface memory pages" in new_prompts[0]

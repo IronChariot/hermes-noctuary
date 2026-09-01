@@ -47,6 +47,7 @@ DEFAULTS: Dict[str, Any] = {
     # Librarian LLM budget
     "llmTimeoutSeconds": 240,
     "librarianMaxTokens": 4096,
+    "jsonRepairRetries": 2,
     "chunkChars": 60000,
     "relatedNodeLimit": 8,
 }
