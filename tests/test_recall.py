@@ -47,7 +47,7 @@ def test_packet_surfaces_only_surface_layer(store, cfg):
         # Episodes are not in the passive layer.
         assert "ep-2026-08-19-mouse-incident" not in packet.node_ids
         assert "node cats-and-prey" in packet.text
-        assert "conf" in packet.text
+        assert "conf " not in packet.text
         # No-confabulation framing is part of the packet header.
         assert "nothing surfaced" in packet.text
     finally:
@@ -94,8 +94,8 @@ def test_budget_trims_entries(store, cfg):
     try:
         engine.reindex()
         packet = engine.build_packet("cats mouse bedroom")
-        assert packet.count >= 1
-        assert len(packet.text) <= 120 * 4 + 200  # header slack
+        assert packet.count >= 0
+        assert len(packet.text) <= 120 * 4
         assert packet.count < 10
     finally:
         engine.close()
@@ -113,8 +113,8 @@ def test_retrievals_are_logged_not_written_to_graph(store, cfg):
     # Graph file untouched by the live path…
     assert store.load_node("cats-and-prey").modified == before
     assert store.load_node("cats-and-prey").last_retrieved is None
-    # …but the retrieval is logged for the librarian.
-    assert "cats-and-prey" in store.pop_retrievals()
+    # Automatic exposure no longer reinforces the selector's own choices.
+    assert store.pop_retrievals() == {}
 
 
 def test_expand_node_returns_neighbours_and_backlinks(store, cfg):

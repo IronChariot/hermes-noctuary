@@ -34,7 +34,7 @@ _CHARS_PER_TOKEN = 4  # rough budget estimate; deliberately conservative
 
 PACKET_HEADER = (
     "## Noctuary passive recall\n"
-    "Technical packet (levels: familiarity < gist; confidence 0..1). "
+    "Relevant recollections (familiarity < gist); preserve uncertainty in the wording. "
     "Drill down with memory_recall(node_id) or memory_verify. "
     "Nothing here means nothing surfaced — never that an event did not happen.\n"
 )
@@ -116,7 +116,7 @@ class RecallEngine:
             return RecallPacket("", [])
 
         packet = self._format_packet(hits)
-        self.store.record_retrieval([h.node.id for h in hits])
+        # Automatic exposure is not evidence of usefulness; never reinforce it.
         return packet
 
     def _rank(self, raw: Sequence[Tuple[str, str, float]]) -> List[RecallHit]:
@@ -158,19 +158,19 @@ class RecallEngine:
             if hit.level == "gist":
                 snippet = _one_paragraph(node.body, 380)
                 line = (
-                    f"- [gist | conf {node.confidence:.2f} | node {node.id} "
+                    f"- [direct | gist | node {node.id} "
                     f"({node.type})] {node.title or node.id} — {snippet} "
                     f"({provenance})"
                 )
             else:
                 line = (
-                    f"- [familiarity | conf {node.confidence:.2f} | node {node.id} "
+                    f"- [direct | familiarity | node {node.id} "
                     f"({node.type})] something related: {node.title or node.id} "
                     f"({provenance}); details not available at this level — "
                     f"use memory_recall if it matters"
                 )
-            if used + len(line) + 1 > budget_chars and node_ids:
-                break
+            if used + len(line) + 1 > budget_chars:
+                continue
             lines.append(line)
             used += len(line) + 1
             node_ids.append(node.id)

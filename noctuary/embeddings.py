@@ -222,6 +222,7 @@ class EmbeddingIndex:
         node_types: Optional[Sequence[str]] = None,
         include_pinned: bool = False,
         top_k: int = 10,
+        exclude_ids: Iterable[str] = (),
     ) -> List[Tuple[str, str, float]]:
         """Return ``(node_id, node_type, cosine)`` ranked best-first.
 
@@ -245,6 +246,8 @@ class EmbeddingIndex:
                     params,
                 ).fetchall()
 
+        excluded = set(exclude_ids)
+        rows = [row for row in rows if row[0] not in excluded]
         q = list(query_vec)
         scored: List[Tuple[str, str, float]] = []
         try:

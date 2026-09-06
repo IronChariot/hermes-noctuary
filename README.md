@@ -14,6 +14,13 @@ The plugin gives the agent graded recall instead of "retrieve every relevant chu
 
 Source records are immutable and permanent. Only passive accessibility fades, and only during nightly consolidation. Every change to the graph is a git commit.
 
+## Selective recall
+
+For active-context repetition suppression, small adaptive packets, optional native
+Codex Luna or bounded OpenRouter relevance judging, and a verified rollback
+workflow, see [Selective passive recall](docs/selective-recall.md). This mode is
+opt-in; existing configurations do not silently enable external judgement.
+
 ## Layout
 
 The plugin is the `noctuary/` package in this repository. It implements the Hermes `MemoryProvider` ABC.

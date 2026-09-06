@@ -8,6 +8,17 @@ from noctuary.embeddings import EmbeddingIndex, HashEmbedder, get_embedder, rein
 from noctuary.store import Node
 
 
+def test_exclusions_precede_top_k(tmp_path):
+    index = EmbeddingIndex(tmp_path / "index.sqlite")
+    try:
+        for i in range(13):
+            index.upsert(f"node-{i}", "concept", False, str(i), [1.0])
+        excluded = {f"node-{i}" for i in range(12)}
+        assert index.search([1.0], top_k=1, exclude_ids=excluded) == [("node-12", "concept", 1.0)]
+    finally:
+        index.close()
+
+
 def test_hash_embedder_deterministic_and_normalized():
     embedder = HashEmbedder()
     a1, a2 = embedder.embed(["the cats caught a mouse", "the cats caught a mouse"])

@@ -861,6 +861,8 @@ def _decay_pass(
     boost = cfg.get_float("retrievalBoost")
     floor = cfg.get_float("demotionFloor")
     retrievals = store.pop_retrievals()
+    if cfg.values.get("usageDecayEnabled", True) is False:
+        return 0, 0, []  # Preserve stored accessibility; no usage-based decay/boost.
 
     decayed = boosted = demoted_low = 0
     for node in store.all_nodes():

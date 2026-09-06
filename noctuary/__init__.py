@@ -182,6 +182,9 @@ class NoctuaryProvider(MemoryProvider):
         self._prefetch_lock = threading.Lock()
         self._prefetch_cache: Optional[tuple] = None  # (query, packet)
         self._last_recall_count = 0
+        self._hook_registrar = None
+        self._passive_hook = None
+        self._hook_handle = None
 
     # -- identification ------------------------------------------------------
 
@@ -223,8 +226,27 @@ class NoctuaryProvider(MemoryProvider):
         threading.Thread(
             target=self._engine.warm, name="noctuary-warm", daemon=True
         ).start()
+        self._install_passive_hook(session_id)
+
+    def _install_passive_hook(self, session_id):
+        if self._cfg.values.get("passiveRecallMode", "legacy") != "selective":
+            return
+        if not callable(self._hook_registrar):
+            logger.warning("noctuary: selective mode needs a hook registrar; auto recall disabled")
+            return
+        from .passive import PassiveRecallHook
+        self._passive_hook = PassiveRecallHook(self, session_id, self._cfg.hermes_home)
+        self._hook_handle = self._hook_registrar("pre_llm_call", self._passive_hook)
+        if self._hook_handle is None:
+            self._passive_hook.close()
+            logger.warning("noctuary: selective hook registration failed; auto recall disabled")
 
     def shutdown(self) -> None:
+        if self._passive_hook is not None:
+            self._passive_hook.close()
+        if self._hook_handle is not None:
+            self._hook_handle.dispose()
+            self._hook_handle = None
         if self._turn_logger is not None:
             self._turn_logger.stop()
             self._turn_logger = None
@@ -240,6 +262,8 @@ class NoctuaryProvider(MemoryProvider):
         return _SYSTEM_PROMPT_BLOCK
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
+        if self._cfg and self._cfg.values.get("passiveRecallMode", "legacy") == "selective":
+            return ""  # Bound hook owns the only automatic injection path.
         self._last_recall_count = 0
         if self._engine is None or is_trivial_prompt(query):
             return ""
@@ -266,6 +290,8 @@ class NoctuaryProvider(MemoryProvider):
         return packet.text
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        if self._cfg and self._cfg.values.get("passiveRecallMode", "legacy") == "selective":
+            return  # No speculative paid judgement or exposure bookkeeping.
         if self._engine is None or is_trivial_prompt(query):
             return
 
@@ -315,6 +341,8 @@ class NoctuaryProvider(MemoryProvider):
             self._turn_logger.flush()
 
     def on_session_switch(self, new_session_id: str, **kwargs) -> None:
+        if self._passive_hook is not None:
+            self._passive_hook.session_id = new_session_id
         if self._turn_logger is not None:
             self._turn_logger.flush()
 
@@ -470,4 +498,6 @@ class NoctuaryProvider(MemoryProvider):
 
 def register(ctx) -> None:
     """Register the Noctuary memory provider with the plugin system."""
-    ctx.register_memory_provider(NoctuaryProvider())
+    provider = NoctuaryProvider()
+    provider._hook_registrar = getattr(ctx, "register_hook", None)
+    ctx.register_memory_provider(provider)

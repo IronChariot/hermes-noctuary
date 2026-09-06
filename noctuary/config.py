@@ -34,6 +34,19 @@ DEFAULTS: Dict[str, Any] = {
     "minUserTurns": 1,
     # Ingestion gate: platforms whose live turns are archived.
     "ingestPlatforms": ["discord"],
+    # Selective recall is opt-in for existing deployments; no paid calls by default.
+    "passiveRecallMode": "legacy",  # legacy | selective
+    "recallJudge": "off",  # off | openrouter | openai-codex (explicit opt-in)
+    "recallJudgeDailyCallLimit": 200,  # subscription request cap; not dollar billing
+    "recallJudgeTimeoutSeconds": 5,
+    "recallJudgeDailyBudgetUsd": "0.05",
+    "recallJudgeCredentialFile": "",  # optional .env path; never a key value
+    "candidateSimilarity": 0.45,
+    "directRecallSimilarity": 0.68,
+    "maxDirectRecallEntries": 2,
+    "maxMultiDomainRecallEntries": 3,
+    "allowAssociativeRecall": False,
+    "usageDecayEnabled": True,  # compatibility; disable to preserve accessibility
     # Recall tuning
     "maxRecallEntries": 6,
     "gistSimilarity": 0.50,
