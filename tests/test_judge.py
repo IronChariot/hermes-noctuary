@@ -36,6 +36,34 @@ def test_codex_explicit_route_no_tools_retry_or_paid_fallback(native):
     with pytest.raises(RuntimeError):judge('again','',CANDIDATES)
     assert create.call_count==1
 
+@pytest.mark.parametrize('limit', [None, 0])
+def test_unlimited_ignores_exhausted_prior_ledger(native, limit):
+    judge,resolver,create,client,response=native
+    assert judge('example','',CANDIDATES)==[]  # consumes the configured one-call cap
+    judge.cfg.values['recallJudgeDailyCallLimit']=limit
+    for _ in range(201):
+        assert judge('example','',CANDIDATES)==[]
+    assert create.call_count==202
+
+
+def test_new_defaults_reach_native_request(native):
+    judge,resolver,create,client,response=native
+    judge.cfg.values.clear()
+    assert judge.cfg.get('recallJudgeTimeoutSeconds')==15
+    assert judge.cfg.get('recallJudgeDailyCallLimit') is None
+    assert judge('example','',CANDIDATES)==[]
+    assert create.call_args.kwargs['timeout']==15
+    assert not (judge.cfg.store_root/'recall-codex-calls.sqlite').exists()
+
+
+@pytest.mark.parametrize('limit', [-1, True, 'unlimited', 1.5])
+def test_invalid_caps_rejected(native,limit):
+    judge,resolver,create,client,response=native
+    judge.cfg.values['recallJudgeDailyCallLimit']=limit
+    with pytest.raises(ValueError):judge('example','',CANDIDATES)
+    create.assert_not_called()
+
+
 @pytest.mark.parametrize('bad',['http://chatgpt.com/backend-api/codex','https://api.openai.com/v1','https://example.com/backend-api/codex'])
 def test_wrong_route_never_sends(native,bad):
     judge,resolver,create,client,response=native

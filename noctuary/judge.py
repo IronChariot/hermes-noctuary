@@ -123,8 +123,8 @@ class OpenRouterJudge:
 
     def __call__(self, query, recent_context, candidates):
         import threading
-        timeout = float(self.cfg.values.get('recallJudgeTimeoutSeconds', 5))
-        if not math.isfinite(timeout) or not 0.1 <= timeout <= 10:
+        timeout = float(self.cfg.values.get('recallJudgeTimeoutSeconds', 15))
+        if not math.isfinite(timeout) or timeout < 0.1:
             raise ValueError('invalid judge timeout')
         if not self._lock.acquire(blocking=False):
             raise RuntimeError('previous judge request still finishing')
@@ -158,8 +158,8 @@ class OpenRouterJudge:
         user = json.dumps(data, ensure_ascii=False)
         if len(user.encode('utf-8')) > 18000:
             raise ValueError('judge input too large')
-        timeout = float(self.cfg.values.get('recallJudgeTimeoutSeconds', 5))
-        if not math.isfinite(timeout) or not 0.1 <= timeout <= 10:
+        timeout = float(self.cfg.values.get('recallJudgeTimeoutSeconds', 15))
+        if not math.isfinite(timeout) or timeout < 0.1:
             raise ValueError('invalid judge timeout')
         key = _credential(self.cfg)
         messages = [{'role':'system','content':SYSTEM}, {'role':'user','content':user}]

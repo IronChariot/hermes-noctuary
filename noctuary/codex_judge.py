@@ -2,7 +2,7 @@
 
 No copied OAuth token, custom endpoint, paid fallback, tool access, or retry.
 The subscription API rejects output-token ceilings: bound input, wall time,
-local response size and daily REQUEST COUNT, not a fictitious dollar budget.
+local response size and an optional daily REQUEST COUNT, not a dollar budget.
 """
 from __future__ import annotations
 import json
@@ -33,11 +33,16 @@ class CodexJudge(OpenRouterJudge):
         if (url.scheme != 'https' or url.hostname != 'chatgpt.com'
                 or not url.path.startswith('/backend-api/codex')):
             raise RuntimeError('unexpected Codex route')
-        limit = self.cfg.values.get('recallJudgeDailyCallLimit', 200)
-        if type(limit) is not int or not 1 <= limit <= 1000:
+        limit = self.cfg.values.get('recallJudgeDailyCallLimit', None)
+        if limit is not None and (type(limit) is not int or limit < 0):
             raise ValueError('invalid daily request limit')
-        budget = DailyBudget(self.cfg.store_root/'recall-codex-calls.sqlite')
-        call_id = budget.reserve(1, limit)  # Never refunded, even on errors/restarts.
+        # Unlimited mode does not consult historical reservations or depend on
+        # the quota ledger being writable. Positive limits remain available.
+        import uuid
+        call_id = uuid.uuid4().hex
+        if limit:
+            budget = DailyBudget(self.cfg.store_root/'recall-codex-calls.sqlite')
+            call_id = budget.reserve(1, limit)  # Never refunded on failures.
         start = time.monotonic()
         self.last_metrics = {'call_id': call_id, 'model': MODEL, 'provider': 'openai-codex'}
         try:
@@ -47,7 +52,7 @@ class CodexJudge(OpenRouterJudge):
             adapter = CodexAuxiliaryClient(leaf, MODEL)
             response = adapter.chat.completions.create(
                 model=MODEL, messages=[{'role':'system','content':SYSTEM}, {'role':'user','content':user}],
-                timeout=float(self.cfg.values.get('recallJudgeTimeoutSeconds', 5)),
+                timeout=float(self.cfg.values.get('recallJudgeTimeoutSeconds', 15)),
                 extra_body={'reasoning': {'effort': 'none'}})
             choice = response.choices[0]
             text = choice.message.content

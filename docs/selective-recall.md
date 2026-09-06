@@ -38,8 +38,8 @@ librarian settings):
 {
   "passiveRecallMode": "selective",
   "recallJudge": "openai-codex",
-  "recallJudgeTimeoutSeconds": 5,
-  "recallJudgeDailyCallLimit": 200,
+  "recallJudgeTimeoutSeconds": 15,
+  "recallJudgeDailyCallLimit": null,
   "recallTokenBudget": 500,
   "maxDirectRecallEntries": 2,
   "maxMultiDomainRecallEntries": 3,
@@ -65,20 +65,23 @@ local similarity/lexical admission. It can miss paraphrases and anaphora.
   by Hermes; no copied static token, third-party proxy, tools, automatic retry,
   model fallback or API-key billing route. Requests use `store: false` through
   the adapter. Daily request reservations persist in `recall-codex-calls.sqlite`
-  and are never refunded, even on failures. This consumes subscription allowance;
+  when a positive cap is configured and are never refunded, even on failures.
+  The default `null` (also `0`) means unlimited local requests and bypasses the
+  ledger entirely, including any old exhausted cap. This consumes subscription allowance;
   it is not an unlimited/free API. Codex rejects output-token caps; this route
   does NOT claim a hard generated-token or dollar ceiling. The caller bounds
-  input, foreground wall time, accepted response size and daily request count.
+  input, foreground wall time and accepted response size; a daily request cap
+  is optional. OpenAI subscription limits still apply.
 - `openrouter`: pins `deepseek/deepseek-v4-flash`, disables fallback routing,
   tools and reasoning, bounds output at 256 tokens, input bytes, route prices
   and daily USD reservations. Optional `recallJudgeCredentialFile` is a local
   `.env` path, never a credential value. `recallJudgeDailyBudgetUsd` defaults to
   `0.05`; ledger `recall-budget.sqlite` retains unknown usage reservations.
 
-Both routes have one no-tools batch, strict known-ID/schema validation, a
+The judge deadline defaults to 15 seconds. Both routes have one no-tools batch, strict known-ID/schema validation, a
 foreground wall-clock deadline and a per-provider in-flight guard. A slow
 transport can finish behind that deadline, but cannot inject late results or
-spawn overlapping requests. Its quota/reservation remains consumed. Judge
+spawn overlapping requests. When a quota/reservation is enabled it remains consumed. Judge
 failure means no automatic packet, never unjudged fallback. Clean dialogue and
 shortlisted private memory excerpts are sent to the chosen provider; enable only
 with the account owner's approval.

@@ -88,11 +88,25 @@ def probe():
     threading.Thread(target=server.serve_forever,daemon=True).start()
     db=SessionDB(home/'state.db')
     agent=None
+    slow_calls=[]
     def make():
         a=AIAgent(base_url=f'http://127.0.0.1:{server.server_port}/v1',api_key='local-fixture-only',provider='custom',api_mode='chat_completions',model='fixture',platform='discord',session_id='selective-test',session_db=db,max_iterations=1,enabled_toolsets=[],skip_context_files=True,load_soul_identity=False,skip_memory=False,skip_background_review=True,save_trajectories=False,quiet_mode=True,fallback_model={},credential_pool=None,max_tokens=128,reasoning_config={'enabled':False})
         p=next(p for p in a._memory_manager._providers if p.name=='noctuary')
         assert p._hook_handle is not None
         assert p._passive_hook.provider is p  # actual memory-loader instance
+        # Real host callback + selector + judge wrapper: the first request
+        # must survive beyond both old 9-second and 10-second cutoffs.
+        from importlib import import_module
+        Judge=import_module(type(p).__module__+'.codex_judge').CodexJudge
+        p._cfg.values.update(recallJudge='openai-codex',recallJudgeTimeoutSeconds=15,recallJudgeDailyCallLimit=None)
+        p._recall_judge=Judge(p._cfg)
+        def slow_request(query,recent,candidates):
+            import time
+            if not slow_calls:
+                slow_calls.append(True)
+                time.sleep(11)
+            return [{'id':c['id'],'kind':'direct','relevance':3} for c in candidates]
+        p._recall_judge._request=slow_request
         return a,p
     try:
         agent,p=make()

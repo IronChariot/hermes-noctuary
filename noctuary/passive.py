@@ -136,7 +136,7 @@ class PassiveRecallHook:
                                    recent_context=recent_context(conversation_history, user_message),
                                    judge=judge, allow_association=allow)
             elapsed = time.monotonic()-started
-            if self.closed or session_id != self.session_id or elapsed > 9:
+            if self.closed or session_id != self.session_id:
                 return None
             # Diagnostic events are not retrieval/reinforcement events. No raw
             # query, memory excerpt, or credential is written to ordinary logs.

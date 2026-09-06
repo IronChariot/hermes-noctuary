@@ -37,8 +37,8 @@ DEFAULTS: Dict[str, Any] = {
     # Selective recall is opt-in for existing deployments; no paid calls by default.
     "passiveRecallMode": "legacy",  # legacy | selective
     "recallJudge": "off",  # off | openrouter | openai-codex (explicit opt-in)
-    "recallJudgeDailyCallLimit": 200,  # subscription request cap; not dollar billing
-    "recallJudgeTimeoutSeconds": 5,
+    "recallJudgeDailyCallLimit": None,  # null or 0 = unlimited subscription requests
+    "recallJudgeTimeoutSeconds": 15,
     "recallJudgeDailyBudgetUsd": "0.05",
     "recallJudgeCredentialFile": "",  # optional .env path; never a key value
     "candidateSimilarity": 0.45,
