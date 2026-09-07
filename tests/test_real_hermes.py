@@ -89,6 +89,7 @@ def probe():
     db=SessionDB(home/'state.db')
     agent=None
     slow_calls=[]
+    judge_calls=[]
     def make():
         a=AIAgent(base_url=f'http://127.0.0.1:{server.server_port}/v1',api_key='local-fixture-only',provider='custom',api_mode='chat_completions',model='fixture',platform='discord',session_id='selective-test',session_db=db,max_iterations=1,enabled_toolsets=[],skip_context_files=True,load_soul_identity=False,skip_memory=False,skip_background_review=True,save_trajectories=False,quiet_mode=True,fallback_model={},credential_pool=None,max_tokens=128,reasoning_config={'enabled':False})
         p=next(p for p in a._memory_manager._providers if p.name=='noctuary')
@@ -101,6 +102,7 @@ def probe():
         p._cfg.values.update(recallJudge='openai-codex',recallJudgeTimeoutSeconds=15,recallJudgeDailyCallLimit=None)
         p._recall_judge=Judge(p._cfg)
         def slow_request(query,recent,candidates):
+            judge_calls.append(query)
             import time
             if not slow_calls:
                 slow_calls.append(True)
@@ -115,6 +117,12 @@ def probe():
         Node=import_module(type(p).__module__+'.store').Node
         p._store.save_node(Node(id='cultivar',type='concept',title='Cultivar',body='Cultivar selects generated writing using taste feedback.',topics=['cultivar','writing']))
         p._engine.reindex()
+        # Soft gateway eviction can leave an old provider callback registered.
+        # Recreate the same session before closing the previous agent.
+        stale_agent = agent
+        from gateway.run_agent_cache import GatewayAgentCacheMixin
+        GatewayAgentCacheMixin()._release_evicted_agent_soft(stale_agent)
+        agent,p=make();p._engine.warm()
         q='  How could Cultivar select generated writing using taste feedback?  '
         from gateway.message_timestamps import render_user_content_with_timestamp
         wire_q=render_user_content_with_timestamp(q,1700000000)
@@ -122,7 +130,10 @@ def probe():
         assert r['completed'] and not r['failed'],r
         marker='| node cultivar ('
         users=lambda:[m for m in wire[-1]['messages'] if m['role']=='user']
-        assert marker in users()[-1]['content'],wire[-1]
+        assert users()[-1]['content'].count(marker)==1, repr(users()[-1]['content'])
+        assert len(judge_calls)==1, judge_calls
+        # Closing the superseded owner must not unregister its replacement.
+        stale_agent.close()
         first_api=users()[-1]['content']
         r2=agent.run_conversation(q,system_message='You are an offline test fixture.',conversation_history=r['messages'])
         assert r2['completed'] and not r2['failed']
@@ -146,7 +157,7 @@ def probe():
         p._turn_logger.flush()
         assert not any('Noctuary passive recall' in t.user for day in p._store.source_days() for t in p._store.read_turns(day))
         assert p._store._read_state().get('retrievals',{})=={}
-        print('REAL_NOCTUARY_OK '+json.dumps({'requests':len(wire),'new_repeat_injections':0,'restart_suppressed':True,'summary_only_reeligible':True,'archive_clean':True,'same_session':'selective-test'}))
+        print('REAL_NOCTUARY_OK '+json.dumps({'requests':len(wire),'soft_eviction_single_packet_and_judge':True,'new_repeat_injections':0,'restart_suppressed':True,'summary_only_reeligible':True,'archive_clean':True,'same_session':'selective-test'}))
     finally:
         if agent:agent.close()
         db.close();get_plugin_manager().unload();server.shutdown();server.server_close()

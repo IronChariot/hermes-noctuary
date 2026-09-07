@@ -5,7 +5,14 @@ import logging
 import re
 import threading
 import time
+import weakref
 from pathlib import Path
+
+# Lifecycle registrations outlive soft-evicted AIAgents. Only the newest
+# successfully registered hook may serve a given profile/session. This is
+# ownership bookkeeping, never a memory-ID/history cache.
+_OWNERS = weakref.WeakValueDictionary()
+_OWNERS_LOCK = threading.Lock()
 
 logger = logging.getLogger(__name__)
 _BLOCK = re.compile(r'<memory-context>\n(.*?)\n</memory-context>', re.S)
@@ -90,16 +97,41 @@ class PassiveRecallHook:
         self.home = Path(home).resolve()
         self.closed = False
         self.lock = threading.Lock()
+        self._handle = None
+
+    def bind(self, handle):
+        """Claim this session only after host registration has succeeded."""
+        key = (self.home, self.session_id)
+        with _OWNERS_LOCK:
+            previous = _OWNERS.get(key)
+            self._handle = handle
+            _OWNERS[key] = self
+        # Dispose outside the ownership lock; do not shut down the old provider's
+        # archive writer or change any transcript/session state.
+        if previous is not None and previous is not self:
+            previous.close()
 
     def close(self):
-        self.closed = True
+        with _OWNERS_LOCK:
+            self.closed = True
+            key = (self.home, self.session_id)
+            if _OWNERS.get(key) is self:
+                del _OWNERS[key]
+            handle, self._handle = self._handle, None
+        if handle is not None:
+            handle.dispose()
+
+    def _is_current(self):
+        with _OWNERS_LOCK:
+            return not self.closed and (
+                self._handle is None or _OWNERS.get((self.home, self.session_id)) is self)
 
     def __call__(self, *, session_id='', user_message='', conversation_history=None, model='', **kwargs):
         from hermes_constants import get_hermes_home
         from agent.memory_provider import is_trivial_prompt
         from agent.memory_manager import build_memory_context_block
         p = self.provider
-        if (self.closed or session_id != self.session_id or Path(get_hermes_home()).resolve() != self.home
+        if (not self._is_current() or session_id != self.session_id or Path(get_hermes_home()).resolve() != self.home
                 or not isinstance(user_message, str) or not isinstance(conversation_history, list)
                 or is_trivial_prompt(user_message) or p._engine is None or not p._engine.is_warm):
             return None
@@ -136,7 +168,7 @@ class PassiveRecallHook:
                                    recent_context=recent_context(conversation_history, user_message),
                                    judge=judge, allow_association=allow)
             elapsed = time.monotonic()-started
-            if self.closed or session_id != self.session_id:
+            if not self._is_current() or session_id != self.session_id:
                 return None
             # Diagnostic events are not retrieval/reinforcement events. No raw
             # query, memory excerpt, or credential is written to ordinary logs.

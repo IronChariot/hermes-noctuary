@@ -235,18 +235,20 @@ class NoctuaryProvider(MemoryProvider):
             logger.warning("noctuary: selective mode needs a hook registrar; auto recall disabled")
             return
         from .passive import PassiveRecallHook
+        if self._passive_hook is not None:
+            self._passive_hook.close()
         self._passive_hook = PassiveRecallHook(self, session_id, self._cfg.hermes_home)
         self._hook_handle = self._hook_registrar("pre_llm_call", self._passive_hook)
         if self._hook_handle is None:
             self._passive_hook.close()
             logger.warning("noctuary: selective hook registration failed; auto recall disabled")
+        else:
+            self._passive_hook.bind(self._hook_handle)
 
     def shutdown(self) -> None:
         if self._passive_hook is not None:
             self._passive_hook.close()
-        if self._hook_handle is not None:
-            self._hook_handle.dispose()
-            self._hook_handle = None
+        self._hook_handle = None
         if self._turn_logger is not None:
             self._turn_logger.stop()
             self._turn_logger = None
@@ -342,7 +344,7 @@ class NoctuaryProvider(MemoryProvider):
 
     def on_session_switch(self, new_session_id: str, **kwargs) -> None:
         if self._passive_hook is not None:
-            self._passive_hook.session_id = new_session_id
+            self._install_passive_hook(new_session_id)
         if self._turn_logger is not None:
             self._turn_logger.flush()
 

@@ -11,6 +11,26 @@ local history survives transport pruning. Standard Hermes in-place summaries
 remain supported. This limitation is detected, not silently treated as full active
 context. Manual recall still works.
 
+## Callback ownership
+
+Hermes may soft-evict an idle agent by releasing its clients without shutting
+its memory provider down. A replacement provider then shares the same session
+ID with a still-registered old callback. Session/profile filtering alone is not
+enough: both would perform judgement and inject their own packet.
+
+Noctuary therefore transfers passive-hook ownership to the newest successfully
+registered instance for each resolved profile/session pair, disposes the old
+registration, and rejects a superseded in-flight result. Late shutdown cannot
+unregister the replacement. Session switches rebind ownership; other profiles
+and sessions stay independent. This registry contains no memory IDs or history:
+repetition suppression still depends solely on active packets, not a lifetime
+seen set. Hermes serializes normal turns for a session; this is not a distributed
+lock for intentionally concurrent agents sharing one session ID.
+
+The localhost integration test exercises the real gateway soft-release path,
+recreation, one outgoing packet and one judge call, then late old-agent cleanup,
+active-history suppression, DB restore and summary-only re-eligibility.
+
 ## Policy
 
 - Parse only recognized Noctuary packets in injected string `api_content`
